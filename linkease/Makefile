@@ -10,13 +10,25 @@ include $(TOPDIR)/rules.mk
 PKG_ARCH_LINKEASE:=$(ARCH)
 
 PKG_NAME:=linkease
-PKG_VERSION:=1.6.7
-PKG_RELEASE:=$(PKG_ARCH_LINKEASE)-1
-PKG_SOURCE:=$(PKG_NAME)-binary-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=http://fw0.koolcenter.com/binary/LinkEase/LinuxStorage/
-PKG_HASH:=641083ec699ca0e52ac8badf11be5ff963a6796cb0b960eefada7ca9b9afe647
+# use PKG_SOURCE_DATE instead of PKG_VERSION for compitable
+PKG_SOURCE_DATE:=1.7.5
+PKG_RELEASE:=4
+ARCH_HEXCODE:=
+ifeq ($(ARCH),x86_64)
+ARCH_HEXCODE=8664
+else ifeq ($(ARCH),aarch64)
+ARCH_HEXCODE=aa64
+else ifeq ($(ARCH),arm)
+ARCH_HEXCODE=aa32
+else ifeq ($(ARCH),mipsel)
+ARCH_HEXCODE=1b0c
+endif
+PKG_SOURCE_VERSION:=$(ARCH_HEXCODE)
+PKG_SOURCE:=$(PKG_NAME)-binary-$(PKG_SOURCE_DATE).tar.gz
+PKG_SOURCE_URL:=http://dl.istoreos.com/binary/LinkEase/LinuxStorage/
+PKG_HASH:=f3ae319974d940f5741cd9fbd295a3a378164e7df82665defa99935608fe733a
 
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-binary-$(PKG_VERSION)
+PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-binary-$(PKG_SOURCE_DATE)
 
 PKG_BUILD_PARALLEL:=1
 PKG_USE_MIPS16:=0
@@ -45,6 +57,7 @@ define Package/$(PKG_NAME)/postinst
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
 	[ -f /etc/uci-defaults/linkease ] && /etc/uci-defaults/linkease && rm -f /etc/uci-defaults/linkease
+	exit 0
 fi
 endef
 

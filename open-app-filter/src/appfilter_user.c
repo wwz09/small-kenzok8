@@ -27,8 +27,10 @@ THE SOFTWARE.
 #include <libubus.h>
 #include <sys/socket.h>
 #include <linux/netlink.h>
+#include <json-c/json.h>
 #include <linux/socket.h>
 #include <sys/socket.h>
+#include "appfilter_config.h"
 #include "appfilter.h"
 #include "appfilter_user.h"
 
@@ -40,12 +42,6 @@ unsigned int hash_mac(unsigned char *mac)
         return 0;
     else
         return mac[0] & (MAX_DEV_NODE_HASH_SIZE - 1);
-}
-int get_timestamp(void)
-{
-    struct timeval cur_time;
-    gettimeofday(&cur_time, NULL);
-    return cur_time.tv_sec;
 }
 
 int hash_appid(int appid)
@@ -73,6 +69,7 @@ void init_dev_node_htable()
     {
         dev_hash_table[i] = NULL;
     }
+    printf("init dev node htable ok...\n");
 }
 
 dev_node_t *add_dev_node(char *mac)
@@ -174,14 +171,86 @@ void update_dev_hostname(void)
         sscanf(line_buf, "%*s %s %s %s", mac_buf, ip_buf, hostname_buf);
         dev_node_t *node = find_dev_node(mac_buf);
         if (!node)
-            continue;
-        if (strlen(hostname_buf) > 0)
+        {
+            node = add_dev_node(mac_buf);
+            strncpy(node->ip, ip_buf, sizeof(node->ip));
+            node->online = 0;
+            node->offline_time = get_timestamp();
+        }
+
+        if (strlen(hostname_buf) > 0 && hostname_buf[0] != '*')
         {
             strncpy(node->hostname, hostname_buf, sizeof(node->hostname));
         }
     }
     fclose(fp);
 }
+
+void clean_dev_nickname_iter(void *arg, dev_node_t *node)
+{
+    node->nickname[0] = '\0';
+}
+
+void clean_dev_nickname(void)
+{
+    dev_foreach(NULL, clean_dev_nickname_iter);
+}
+
+void update_dev_nickname(void)
+{
+    char nickname_buf[128] = {0};
+    char mac_str[128] = {0};
+    struct uci_context *uci_ctx = uci_alloc_context();
+    clean_dev_nickname();
+    int num = af_get_uci_list_num(uci_ctx, "user_info", "user_info");
+
+    for (int i = 0; i < num; i++) {
+        af_uci_get_array_value(uci_ctx, "user_info.@user_info[%d].mac", i, mac_str, sizeof(mac_str));
+        dev_node_t *node = find_dev_node(mac_str);
+        if (!node)
+            continue;
+
+        af_uci_get_array_value(uci_ctx, "user_info.@user_info[%d].nickname", i, nickname_buf, sizeof(nickname_buf));
+        printf("update dev nickname: %s\n", nickname_buf);
+        strncpy(node->nickname, nickname_buf, sizeof(node->nickname));
+    }   
+    printf("update dev nickname ok\n");
+    uci_free_context(uci_ctx);
+}
+
+
+void clean_dev_whitelist_flag_iter(void *arg, dev_node_t *node)
+{
+    node->is_whitelist = 0;
+}
+
+void clean_dev_whitelist_flag(void)
+{
+    dev_foreach(NULL, clean_dev_whitelist_flag_iter);
+}
+
+
+void update_dev_whitelist_flag(void)
+{
+    clean_dev_whitelist_flag();
+    dev_node_t *node = NULL;
+    struct uci_context *uci_ctx = uci_alloc_context();
+    if (!uci_ctx) {
+        return;
+    }
+    char mac_str[128] = {0};
+    int num = af_get_uci_list_num(uci_ctx, "appfilter", "whitelist");
+    for (int i = 0; i < num; i++) {
+        af_uci_get_array_value(uci_ctx, "appfilter.@whitelist[%d].mac", i, mac_str, sizeof(mac_str));
+        node = find_dev_node(mac_str);
+        if (node) {
+            node->is_whitelist = 1;
+        }
+    }
+    uci_free_context(uci_ctx);
+}
+
+
 
 void clean_dev_online_status(void)
 {
@@ -191,6 +260,7 @@ void clean_dev_online_status(void)
         dev_node_t *node = dev_hash_table[i];
         while (node)
         {
+
             if (node->online)
             {
                 node->offline_time = get_timestamp();
@@ -199,6 +269,7 @@ void clean_dev_online_status(void)
             node = node->next;
         }
     }
+
 }
 
 /*
@@ -239,58 +310,9 @@ void update_dev_from_oaf(void)
     fclose(fp);
 }
 
-void update_dev_from_arp(void)
-{
-    char line_buf[256] = {0};
-    char mac_buf[32] = {0};
-    char ip_buf[32] = {0};
-    char lan_ip[32] = {0};
-    char lan_mask[32] = {0};
-
-    exec_with_result_line(CMD_GET_LAN_IP, lan_ip, sizeof(lan_ip));
-    exec_with_result_line(CMD_GET_LAN_MASK, lan_mask, sizeof(lan_mask));
-    if (strlen(lan_ip) < MIN_INET_ADDR_LEN || strlen(lan_mask) < MIN_INET_ADDR_LEN)
-    {
-        return;
-    }
-
-    FILE *fp = fopen("/proc/net/arp", "r");
-    if (!fp)
-    {
-        printf("open dev file....failed\n");
-        return;
-    }
-    fgets(line_buf, sizeof(line_buf), fp); // title
-    while (fgets(line_buf, sizeof(line_buf), fp))
-    {
-        sscanf(line_buf, "%s %*s %*s %s", ip_buf, mac_buf);
-
-        if (strlen(mac_buf) < 17 || strlen(ip_buf) < MIN_INET_ADDR_LEN)
-        {
-            printf("invalid mac:%s or ip:%s\n", mac_buf, ip_buf);
-            continue;
-        }
-        if (0 == strcmp(mac_buf, "00:00:00:00:00:00"))
-            continue;
-        if (!check_same_network(lan_ip, lan_mask, ip_buf) || 0 == strcmp(lan_ip, ip_buf))
-        {
-            continue;
-        }
-        dev_node_t *node = find_dev_node(mac_buf);
-        if (!node)
-        {
-            node = add_dev_node(mac_buf);
-            if (!node)
-                continue;
-            strncpy(node->ip, ip_buf, sizeof(node->ip));
-        }
-    }
-    fclose(fp);
-}
 void update_dev_online_status(void)
 {
     update_dev_from_oaf();
-    update_dev_from_arp();
 }
 
 #define DEV_OFFLINE_TIME (SECONDS_PER_DAY * 3)
@@ -326,7 +348,7 @@ int check_dev_expire(void)
                     }
                 }
                 expire_count++;
-                printf("dev:%s expired, offline time = %ds, count=%d, visit_count=%d\n",
+                LOG_WARN("dev:%s expired, offline time = %ds, count=%d, visit_count=%d\n",
                        node->mac, offline_time, expire_count, visit_count);
             }
         NEXT:
@@ -373,21 +395,60 @@ void flush_dev_expire_node(void)
     }
 }
 
+void update_dev_visiting_info(void){
+    char line_buf[256] = {0};
+    char mac_buf[32] = {0};
+    char url_buf[32] = {0};
+    char app_buf[32] = {0};
+    char time_buf[32] = {0};
+
+    FILE *fp = fopen("/proc/net/af_visit", "r");    
+    if (!fp)
+    {
+        printf("open af_visit file....failed\n");
+        return;
+    }
+    fgets(line_buf, sizeof(line_buf), fp); // title
+    while (fgets(line_buf, sizeof(line_buf), fp))   
+    {
+        sscanf(line_buf, "%s %s %s", mac_buf, app_buf, url_buf);
+        dev_node_t *node = find_dev_node(mac_buf);
+        if (!node)
+            continue;
+        if (strcmp(url_buf, "none") == 0) {
+            node->visiting_url[0] = '\0';
+        }
+        else {
+            strncpy(node->visiting_url, url_buf, sizeof(node->visiting_url));
+        }
+        node->visiting_app = atoi(app_buf);
+    }
+    fclose(fp);
+}
+
+void update_dev_list(void)
+{
+    clean_dev_online_status();
+    update_dev_hostname();
+    update_dev_nickname();
+    update_dev_online_status();
+    update_dev_visiting_info();
+}
+
+
 void dump_dev_list(void)
+
 {
     int i, j;
     int count = 0;
     char hostname_buf[MAX_HOSTNAME_SIZE] = {0};
     char ip_buf[MAX_IP_LEN] = {0};
-    clean_dev_online_status();
-    update_dev_hostname();
-    update_dev_online_status();
+
     FILE *fp = fopen(OAF_DEV_LIST_FILE, "w");
     if (!fp)
     {
         return;
     }
-
     fprintf(fp, "%-4s %-20s %-20s %-32s %-8s\n", "Id", "Mac Addr", "Ip Addr", "Hostname", "Online");
     for (i = 0; i < MAX_DEV_NODE_HASH_SIZE; i++)
     {
@@ -501,9 +562,11 @@ void flush_expire_visit_info(void)
                 {
                     if (p_info->expire)
                     {
+                        LOG_WARN("check expire,flush expire visit info: %s, appid=%d\n", node->mac, p_info->appid);
                         if (NULL == prev)
                         {
                             node->visit_htable[j] = p_info->next;
+                            LOG_WARN("flush expire visit info: %s, appid=%d\n", node->mac, p_info->appid);
                             free(p_info);
                             p_info = node->visit_htable[j];
                             prev = NULL;
@@ -511,6 +574,7 @@ void flush_expire_visit_info(void)
                         else
                         {
                             prev->next = p_info->next;
+                            LOG_WARN("flush expire visit info: %s, appid=%d\n", node->mac, p_info->appid);
                             free(p_info);
                             p_info = prev->next;
                         }
@@ -570,4 +634,56 @@ void dump_dev_visit_list(void)
     }
 EXIT:
     fclose(fp);
+}
+
+void clean_invalid_app_records(void)
+{
+    int i, j;
+    int invalid_count = 0;
+    int total_count = 0;
+    
+    for (i = 0; i < MAX_DEV_NODE_HASH_SIZE; i++)
+    {
+        dev_node_t *node = dev_hash_table[i];
+        while (node)
+        {
+            for (j = 0; j < MAX_VISIT_HASH_SIZE; j++)
+            {
+                visit_info_t *p_info = node->visit_htable[j];
+                while (p_info)
+                {
+                    total_count++;
+                    char *app_name = get_app_name_by_id(p_info->appid);
+                    if (app_name && strlen(app_name) == 0)
+                    {
+                        p_info->expire = 1;
+                        invalid_count++;
+                        LOG_WARN("clean: MAC=%s, AppID=%d\n", node->mac, p_info->appid);
+                    }
+                    p_info = p_info->next;
+                }
+            }
+            node = node->next;
+        }
+    }
+    if (invalid_count > 0)
+    {
+        flush_expire_visit_info();
+    }
+}
+
+void clear_device_app_statistics(void)
+{
+    int i;
+    
+    for (i = 0; i < MAX_DEV_NODE_HASH_SIZE; i++)
+    {
+        dev_node_t *node = dev_hash_table[i];
+        while (node)
+        {
+            memset(node->stat, 0, sizeof(node->stat));
+            node = node->next;
+        }
+    }
+    
 }

@@ -1,5 +1,8 @@
 ## 介绍
 
+#### 已归档
+
+注意：鉴于运营商借着打击pcdn的理由，大搞nat4（也许是nat444444444...我也不知道以后会有多少个4），打洞基本失效，继续更新已无必要。大陆地区运营商网内、网间限速严重，ipv6也是苟延残喘，跨境倒是速度不错。。。
 #### 基于 openwrt master 分支的 natmap 插件
 
 注意：自 **openwrt23.0** 之后，使用 **golang>= 1.20，luci2**，部分插件不兼容。
@@ -82,7 +85,7 @@ API Key 请访问 https://dash.cloudflare.com/profile/api-tokens 复制 Global A
 ### openwrt 编译时添加软件源至 feeds.conf.default 首行，以覆盖 openwrt 内置 luci-app-natmap
 
 ```
-src-git zzz https://github.com/blueberry-pie-11/luci-app-natmap
+src-git zzz https://github.com/blueberry-pie-11/openwrt-natmap
 ```
 
 ### 编译源码，尽量使用编译固件而非插件安装
